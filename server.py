@@ -3,6 +3,7 @@ from typing import List, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from moralis import evm_api
+import requests
 
 app = FastAPI(
     title="Moralis Portfolio Tracker API",
@@ -11,8 +12,15 @@ app = FastAPI(
 )
 
 MORALIS_API = os.getenv("MORALIS_API")
+NOTION_API_KEY = os.getenv("NOTION_API_KEY")
+NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
+
 if not MORALIS_API:
     raise RuntimeError("Missing MORALIS_API environment variable")
+if not NOTION_API_KEY:
+    raise RuntimeError("Missing NOTION_API_KEY environment variable")
+if not NOTION_DATABASE_ID:
+    raise RuntimeError("Missing NOTION_DATABASE_ID environment variable")
 
 WALLETS = [
     "0x47C7c4E3b59D2C03E98bf54C104e7481474842E5",
@@ -30,6 +38,9 @@ class TokenBalance(BaseModel):
     symbol: Optional[str]
     name: Optional[str]
     balance: float
+
+class NotionUpdateResponse(BaseModel):
+    updated_pages: int
 
 @app.get("/", response_model=HealthCheckResponse, operation_id="getRoot", summary="Health check endpoint")
 def root():
@@ -63,10 +74,41 @@ def get_balances_for_wallet(chain: str, address: str) -> List[TokenBalance]:
 
 @app.get("/portfolio", response_model=List[TokenBalance], operation_id="getPortfolio", summary="Get token balances for tracked wallets")
 def portfolio():
-    if not MORALIS_API:
-        raise HTTPException(status_code=500, detail="MORALIS_API env var is missing on server")
     results = []
     for wallet in WALLETS:
         for chain in CHAINS:
             results.extend(get_balances_for_wallet(chain, wallet))
     return [r for r in results if r.balance > 0]
+
+@app.post("/update_notion", response_model=NotionUpdateResponse, operation_id="updateNotion", summary="Push balances to Notion")
+def update_notion():
+    balances = []
+    for wallet in WALLETS:
+        for chain in CHAINS:
+            balances.extend(get_balances_for_wallet(chain, wallet))
+
+    updated_count = 0
+    headers = {
+        "Authorization": f"Bearer {NOTION_API_KEY}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json"
+    }
+
+    for balance in balances:
+        data = {
+            "parent": {"database_id": NOTION_DATABASE_ID},
+            "properties": {
+                "Wallet": {"title": [{"text": {"content": balance.wallet}}]},
+                "Chain": {"rich_text": [{"text": {"content": balance.chain}}]},
+                "Symbol": {"rich_text": [{"text": {"content": balance.symbol or ""}}]},
+                "Balance": {"number": balance.balance},
+            }
+        }
+        response = requests.post("https://api.notion.com/v1/pages", headers=headers, json=data)
+        if response.ok:
+            updated_count += 1
+        else:
+            print(f"Failed to update Notion page: {response.text}")
+
+    return NotionUpdateResponse(updated_pages=updated_count)
+
