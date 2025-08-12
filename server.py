@@ -111,4 +111,3 @@ def update_notion():
             print(f"Failed to update Notion page: {response.text}")
 
     return NotionUpdateResponse(updated_pages=updated_count)
-
