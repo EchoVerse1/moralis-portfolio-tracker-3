@@ -68,5 +68,3 @@ def update_notion_endpoint():
 @app.get("/")
 def root():
     return {"message": "Moralis Portfolio Tracker API running"}
-
-
