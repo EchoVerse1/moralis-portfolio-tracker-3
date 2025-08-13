@@ -11,6 +11,7 @@ app = FastAPI(
     description="API to fetch wallet token balances using Moralis and update Notion"
 )
 
+# Environment variables
 MORALIS_API = os.getenv("MORALIS_API")
 NOTION_API_KEY = os.getenv("NOTION_API_KEY")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
@@ -22,13 +23,15 @@ if not NOTION_API_KEY:
 if not NOTION_DATABASE_ID:
     raise RuntimeError("Missing NOTION_DATABASE_ID environment variable")
 
+# Wallets & chains
 WALLETS = [
     "0x47C7c4E3b59D2C03E98bf54C104e7481474842E5",
     "0x980F71B0D813d6cC81a248e39964c8D1a7BE01E5",
 ]
 
-CHAINS = ["eth", "bsc", "polygon", "avalanche", "fantom", "arbitrum", "optimism"]
+CHAINS = ["eth", "bsc", "polygon", "avalanche", "fantom", "arbitrum", "optimism", "base"]
 
+# Models
 class HealthCheckResponse(BaseModel):
     message: str
 
@@ -46,31 +49,55 @@ class NotionUpdateResponse(BaseModel):
 def root():
     return HealthCheckResponse(message="Moralis Portfolio Tracker (Python) is live 🚀")
 
+# Fetch wallet balances with pagination
 def get_balances_for_wallet(chain: str, address: str) -> List[TokenBalance]:
-    try:
-        data = evm_api.token.get_wallet_token_balances(
-            api_key=MORALIS_API,
-            params={"address": address, "chain": chain}
-        )
-        out = []
-        for t in data:
-            decimals = int(t.get("decimals") or 0)
-            raw = t.get("balance") or "0"
-            try:
-                balance = int(raw) / (10 ** decimals) if decimals > 0 else int(raw)
-            except Exception:
-                balance = 0
-            out.append(TokenBalance(
-                chain=chain,
-                wallet=address,
-                symbol=t.get("symbol"),
-                name=t.get("name"),
-                balance=balance
-            ))
-        return out
-    except Exception as e:
-        print(f"[Moralis ERROR] {chain} - {address}: {e}")
-        return []
+    out = []
+    cursor = None
+
+    while True:
+        try:
+            params = {
+                "address": address,
+                "chain": chain,
+                "limit": 50  # small chunks to avoid ResponseTooLargeError
+            }
+            if cursor:
+                params["cursor"] = cursor
+
+            data = evm_api.token.get_wallet_token_balances(api_key=MORALIS_API, params=params)
+
+            # Support both list and dict response formats
+            results = data if isinstance(data, list) else data.get("result", [])
+
+            for t in results:
+                decimals = int(t.get("decimals") or 0)
+                raw = t.get("balance") or "0"
+                try:
+                    balance = int(raw) / (10 ** decimals) if decimals > 0 else int(raw)
+                except Exception:
+                    balance = 0
+                out.append(TokenBalance(
+                    chain=chain,
+                    wallet=address,
+                    symbol=t.get("symbol"),
+                    name=t.get("name"),
+                    balance=balance
+                ))
+
+            # Check pagination
+            if isinstance(data, dict):
+                cursor = data.get("cursor")
+            else:
+                cursor = None
+
+            if not cursor:
+                break
+
+        except Exception as e:
+            print(f"[Moralis ERROR] {chain} - {address}: {e}")
+            break
+
+    return out
 
 @app.get("/portfolio", response_model=List[TokenBalance], operation_id="getPortfolio", summary="Get token balances for tracked wallets")
 def portfolio():
@@ -111,3 +138,4 @@ def update_notion():
             print(f"Failed to update Notion page: {response.text}")
 
     return NotionUpdateResponse(updated_pages=updated_count)
+
