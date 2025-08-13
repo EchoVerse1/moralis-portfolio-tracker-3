@@ -1,141 +1,72 @@
 import os
-from typing import List, Optional
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from moralis import evm_api
 import requests
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from dotenv import load_dotenv
 
-app = FastAPI(
-    title="Moralis Portfolio Tracker API",
-    version="1.0.0",
-    description="API to fetch wallet token balances using Moralis and update Notion"
-)
+load_dotenv()
 
-# Environment variables
-MORALIS_API = os.getenv("MORALIS_API")
+MORALIS_API_KEY = os.getenv("MORALIS_API_KEY")
 NOTION_API_KEY = os.getenv("NOTION_API_KEY")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
+WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")
+CHAIN = os.getenv("CHAIN", "eth")  # default to Ethereum
 
-if not MORALIS_API:
-    raise RuntimeError("Missing MORALIS_API environment variable")
 if not NOTION_API_KEY:
     raise RuntimeError("Missing NOTION_API_KEY environment variable")
+if not MORALIS_API_KEY:
+    raise RuntimeError("Missing MORALIS_API_KEY environment variable")
+if not WALLET_ADDRESS:
+    raise RuntimeError("Missing WALLET_ADDRESS environment variable")
 if not NOTION_DATABASE_ID:
     raise RuntimeError("Missing NOTION_DATABASE_ID environment variable")
 
-# Wallets & chains
-WALLETS = [
-    "0x47C7c4E3b59D2C03E98bf54C104e7481474842E5",
-    "0x980F71B0D813d6cC81a248e39964c8D1a7BE01E5",
-]
+app = FastAPI()
 
-CHAINS = ["eth", "bsc", "polygon", "avalanche", "fantom", "arbitrum", "optimism", "base"]
+def get_wallet_tokens():
+    url = f"https://deep-index.moralis.io/api/v2.2/{WALLET_ADDRESS}/erc20"
+    headers = {"X-API-Key": MORALIS_API_KEY}
+    params = {"chain": CHAIN}
+    r = requests.get(url, headers=headers, params=params)
+    r.raise_for_status()
+    return r.json()
 
-# Models
-class HealthCheckResponse(BaseModel):
-    message: str
-
-class TokenBalance(BaseModel):
-    chain: str
-    wallet: str
-    symbol: Optional[str]
-    name: Optional[str]
-    balance: float
-
-class NotionUpdateResponse(BaseModel):
-    updated_pages: int
-
-@app.get("/", response_model=HealthCheckResponse, operation_id="getRoot", summary="Health check endpoint")
-def root():
-    return HealthCheckResponse(message="Moralis Portfolio Tracker (Python) is live 🚀")
-
-# Fetch wallet balances with pagination
-def get_balances_for_wallet(chain: str, address: str) -> List[TokenBalance]:
-    out = []
-    cursor = None
-
-    while True:
-        try:
-            params = {
-                "address": address,
-                "chain": chain,
-                "limit": 50  # small chunks to avoid ResponseTooLargeError
-            }
-            if cursor:
-                params["cursor"] = cursor
-
-            data = evm_api.token.get_wallet_token_balances(api_key=MORALIS_API, params=params)
-
-            # Support both list and dict response formats
-            results = data if isinstance(data, list) else data.get("result", [])
-
-            for t in results:
-                decimals = int(t.get("decimals") or 0)
-                raw = t.get("balance") or "0"
-                try:
-                    balance = int(raw) / (10 ** decimals) if decimals > 0 else int(raw)
-                except Exception:
-                    balance = 0
-                out.append(TokenBalance(
-                    chain=chain,
-                    wallet=address,
-                    symbol=t.get("symbol"),
-                    name=t.get("name"),
-                    balance=balance
-                ))
-
-            # Check pagination
-            if isinstance(data, dict):
-                cursor = data.get("cursor")
-            else:
-                cursor = None
-
-            if not cursor:
-                break
-
-        except Exception as e:
-            print(f"[Moralis ERROR] {chain} - {address}: {e}")
-            break
-
-    return out
-
-@app.get("/portfolio", response_model=List[TokenBalance], operation_id="getPortfolio", summary="Get token balances for tracked wallets")
-def portfolio():
-    results = []
-    for wallet in WALLETS:
-        for chain in CHAINS:
-            results.extend(get_balances_for_wallet(chain, wallet))
-    return [r for r in results if r.balance > 0]
-
-@app.post("/update_notion", response_model=NotionUpdateResponse, operation_id="updateNotion", summary="Push balances to Notion")
-def update_notion():
-    balances = []
-    for wallet in WALLETS:
-        for chain in CHAINS:
-            balances.extend(get_balances_for_wallet(chain, wallet))
-
-    updated_count = 0
+def update_notion(tokens):
+    url = "https://api.notion.com/v1/pages"
     headers = {
         "Authorization": f"Bearer {NOTION_API_KEY}",
         "Notion-Version": "2022-06-28",
         "Content-Type": "application/json"
     }
-
-    for balance in balances:
-        data = {
+    responses = []
+    for token in tokens:
+        payload = {
             "parent": {"database_id": NOTION_DATABASE_ID},
             "properties": {
-                "Wallet": {"title": [{"text": {"content": balance.wallet}}]},
-                "Chain": {"rich_text": [{"text": {"content": balance.chain}}]},
-                "Symbol": {"rich_text": [{"text": {"content": balance.symbol or ""}}]},
-                "Balance": {"number": balance.balance},
+                "Name": {"title": [{"text": {"content": token.get("name", "Unknown")}}]},
+                "Symbol": {"rich_text": [{"text": {"content": token.get("symbol", "")}}]},
+                "Balance": {"number": float(token.get("balance", 0)) / (10 ** int(token.get("decimals", 0)))}
             }
         }
-        response = requests.post("https://api.notion.com/v1/pages", headers=headers, json=data)
-        if response.ok:
-            updated_count += 1
-        else:
-            print(f"Failed to update Notion page: {response.text}")
+        res = requests.post(url, headers=headers, json=payload)
+        responses.append(res.json())
+    return responses
 
-    return NotionUpdateResponse(updated_pages=updated_count)
+@app.post("/update_notion")
+def update_notion_endpoint():
+    try:
+        tokens = get_wallet_tokens()
+        notion_responses = update_notion(tokens)
+        return JSONResponse(content={
+            "status": "success",
+            "tokens_sent": len(tokens),
+            "notion_responses": notion_responses
+        })
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+@app.get("/")
+def root():
+    return {"message": "Moralis Portfolio Tracker API running"}
+
 
