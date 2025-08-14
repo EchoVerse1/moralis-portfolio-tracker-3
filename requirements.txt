@@ -2,3 +2,4 @@ fastapi
 uvicorn
 moralis
 requests
+python-dotenv
