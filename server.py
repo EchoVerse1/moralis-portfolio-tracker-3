@@ -10,7 +10,8 @@ MORALIS_API_KEY = os.getenv("MORALIS_API_KEY")
 NOTION_API_KEY = os.getenv("NOTION_API_KEY")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")
-CHAIN = os.getenv("CHAIN", "eth")  # default to Ethereum
+
+SUPPORTED_CHAINS = ["eth", "bsc", "base"]  # Always fetch from these chains
 
 if not NOTION_API_KEY:
     raise RuntimeError("Missing NOTION_API_KEY environment variable")
@@ -24,12 +25,18 @@ if not NOTION_DATABASE_ID:
 app = FastAPI()
 
 def get_wallet_tokens():
-    url = f"https://deep-index.moralis.io/api/v2.2/{WALLET_ADDRESS}/erc20"
-    headers = {"X-API-Key": MORALIS_API_KEY}
-    params = {"chain": CHAIN}
-    r = requests.get(url, headers=headers, params=params)
-    r.raise_for_status()
-    return r.json()
+    all_tokens = []
+    for chain in SUPPORTED_CHAINS:
+        url = f"https://deep-index.moralis.io/api/v2.2/{WALLET_ADDRESS}/erc20"
+        headers = {"X-API-Key": MORALIS_API_KEY}
+        params = {"chain": chain}
+        r = requests.get(url, headers=headers, params=params)
+        r.raise_for_status()
+        tokens = r.json()
+        for token in tokens:
+            token["chain"] = chain  # annotate with chain
+        all_tokens.extend(tokens)
+    return all_tokens
 
 def update_notion(tokens):
     url = "https://api.notion.com/v1/pages"
@@ -45,7 +52,10 @@ def update_notion(tokens):
             "properties": {
                 "Name": {"title": [{"text": {"content": token.get("name", "Unknown")}}]},
                 "Symbol": {"rich_text": [{"text": {"content": token.get("symbol", "")}}]},
-                "Balance": {"number": float(token.get("balance", 0)) / (10 ** int(token.get("decimals", 0)))}
+                "Balance": {
+                    "number": float(token.get("balance", 0)) / (10 ** int(token.get("decimals", 0)))
+                },
+                "Chain": {"rich_text": [{"text": {"content": token.get("chain", "")}}]}
             }
         }
         res = requests.post(url, headers=headers, json=payload)
