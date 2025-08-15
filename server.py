@@ -24,6 +24,7 @@ if not NOTION_DATABASE_ID:
 
 app = FastAPI()
 
+
 def get_wallet_tokens():
     all_tokens = []
     for chain in SUPPORTED_CHAINS:
@@ -38,14 +39,15 @@ def get_wallet_tokens():
         all_tokens.extend(tokens)
     return all_tokens
 
-def update_notion(tokens):
+
+def push_to_notion(tokens):
     url = "https://api.notion.com/v1/pages"
     headers = {
         "Authorization": f"Bearer {NOTION_API_KEY}",
         "Notion-Version": "2022-06-28",
         "Content-Type": "application/json"
     }
-    responses = []
+
     for token in tokens:
         payload = {
             "parent": {"database_id": NOTION_DATABASE_ID},
@@ -58,22 +60,21 @@ def update_notion(tokens):
                 "Chain": {"rich_text": [{"text": {"content": token.get("chain", "")}}]}
             }
         }
-        res = requests.post(url, headers=headers, json=payload)
-        responses.append(res.json())
-    return responses
+        requests.post(url, headers=headers, json=payload)
+
 
 @app.post("/update_notion")
 def update_notion_endpoint():
     try:
         tokens = get_wallet_tokens()
-        notion_responses = update_notion(tokens)
+        push_to_notion(tokens)
         return JSONResponse(content={
             "status": "success",
-            "tokens_sent": len(tokens),
-            "notion_responses": notion_responses
+            "message": f"Synced {len(tokens)} tokens to Notion ✅"
         })
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
 
 @app.get("/")
 def root():
