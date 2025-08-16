@@ -45,13 +45,12 @@ def push_to_notion(token):
     except Exception:
         balance = balance_raw
 
-    chain = token.get("possible_spam", False)
     chain_display = token.get("token_address", "")[:6]  # crude fallback
 
     payload = {
         "parent": {"database_id": NOTION_DATABASE_ID},
         "properties": {
-            "Name": {
+            "Name": {  # Title property
                 "title": [{"text": {"content": name}}]
             },
             "Symbol": {
