@@ -1,4 +1,5 @@
 import os
+import subprocess
 import requests
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -10,6 +11,19 @@ WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")
 MORALIS_BASE = "https://deep-index.moralis.io/api/v2.2"
 
 
+def get_commit_hash() -> str:
+    """Try to read the latest Git commit hash."""
+    try:
+        commit = (
+            subprocess.check_output(["git", "rev-parse", "HEAD"])
+            .decode("utf-8")
+            .strip()
+        )
+        return commit
+    except Exception:
+        return "unknown"
+
+
 @app.get("/")
 @app.head("/")   # ✅ handle HEAD so Render health checks pass
 def home():
@@ -19,6 +33,16 @@ def home():
 @app.get("/ping")
 def ping():
     return "pong"
+
+
+@app.get("/version")
+def version():
+    """Return the current git commit hash for debugging deployments."""
+    return {
+        "status": "ok",
+        "commit": get_commit_hash(),
+        "wallet": WALLET_ADDRESS,
+    }
 
 
 @app.get("/moralis/raw")
