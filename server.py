@@ -1,5 +1,5 @@
+# server.py
 import os
-import subprocess
 import requests
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -7,26 +7,14 @@ from fastapi.responses import JSONResponse
 app = FastAPI()
 
 MORALIS_API_KEY = os.getenv("MORALIS_API_KEY")
-WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")
+WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")  # default wallet from env
 MORALIS_BASE = "https://deep-index.moralis.io/api/v2.2"
 
 
-def get_commit_hash() -> str:
-    """Try to read the latest Git commit hash."""
-    try:
-        commit = (
-            subprocess.check_output(["git", "rev-parse", "HEAD"])
-            .decode("utf-8")
-            .strip()
-        )
-        return commit
-    except Exception:
-        return "unknown"
-
-
 @app.get("/")
-@app.head("/")   # ✅ handle HEAD so Render health checks pass
-def home():
+@app.head("/")
+def root():
+    """Health check endpoint for Render."""
     return {"status": "running", "wallet": WALLET_ADDRESS}
 
 
@@ -35,64 +23,30 @@ def ping():
     return "pong"
 
 
-@app.get("/version")
-def version():
-    """Return the current git commit hash for debugging deployments."""
-    return {
-        "status": "ok",
-        "commit": get_commit_hash(),
-        "wallet": WALLET_ADDRESS,
-    }
+@app.get("/tokens")
+def get_tokens(chain: str = "eth"):
+    """Get tokens for default env wallet."""
+    if not WALLET_ADDRESS:
+        return JSONResponse({"error": "Missing WALLET_ADDRESS"}, status_code=500)
+    return fetch_tokens(WALLET_ADDRESS, chain)
 
 
-@app.get("/moralis/raw")
-def moralis_raw(chain: str = "bsc", wallet: str | None = None):
-    """Return raw Moralis balances (exact API output)."""
-    w = wallet or WALLET_ADDRESS
-    if not w:
-        return JSONResponse({"error": "Missing wallet"}, status_code=400)
+@app.get("/tokens/{wallet}")
+def get_tokens_for_wallet(wallet: str, chain: str = "eth"):
+    """Get tokens for any given wallet."""
+    return fetch_tokens(wallet, chain)
+
+
+def fetch_tokens(wallet: str, chain: str):
+    """Helper to fetch ERC20 balances from Moralis."""
     if not MORALIS_API_KEY:
         return JSONResponse({"error": "Missing MORALIS_API_KEY"}, status_code=500)
 
-    url = f"{MORALIS_BASE}/wallets/{w}/erc20"
+    url = f"{MORALIS_BASE}/wallets/{wallet}/erc20"
     headers = {"accept": "application/json", "X-API-Key": MORALIS_API_KEY}
-    r = requests.get(url, headers=headers, params={"chain": chain}, timeout=20)
-    return JSONResponse(content=r.json(), status_code=r.status_code)
 
-
-@app.get("/moralis")
-def moralis_parsed(chain: str = "bsc", wallet: str | None = None):
-    """Return simplified, human-readable balances."""
-    w = wallet or WALLET_ADDRESS
-    if not w:
-        return JSONResponse({"error": "Missing wallet"}, status_code=400)
-    if not MORALIS_API_KEY:
-        return JSONResponse({"error": "Missing MORALIS_API_KEY"}, status_code=500)
-
-    url = f"{MORALIS_BASE}/wallets/{w}/erc20"
-    headers = {"accept": "application/json", "X-API-Key": MORALIS_API_KEY}
-    r = requests.get(url, headers=headers, params={"chain": chain}, timeout=20)
-    if r.status_code != 200:
-        return JSONResponse({"error": r.text}, status_code=r.status_code)
-
-    data = r.json()
-    items = data.get("result", data if isinstance(data, list) else [])
-
-    parsed = []
-    for t in items:
-        try:
-            raw = float(t.get("balance", 0))
-            decimals = int(t.get("decimals", 0) or 0)
-            balance = raw / (10 ** decimals) if decimals else raw
-        except Exception:
-            balance = t.get("balance")
-        parsed.append({
-            "name": t.get("name"),
-            "symbol": t.get("symbol"),
-            "balance": balance,
-            "balance_raw": t.get("balance"),
-            "decimals": t.get("decimals"),
-            "token_address": t.get("token_address"),
-        })
-
-    return {"wallet": w, "chain": chain, "count": len(parsed), "tokens": parsed}
+    try:
+        r = requests.get(url, headers=headers, params={"chain": chain}, timeout=20)
+        return JSONResponse(content=r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
